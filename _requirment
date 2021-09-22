@@ -1,0 +1,206 @@
+Flask
+Flask-Admin
+Flask-SQLAlchemy
+Flask-Login
+
+
+
+__________
+#INDICI 
+#CHECK stesso cliente non si può prenotare nello stesso slot SlotDisponibili
+CREATE UNIQUE INDEX idx_pren ON prenotazioni (idCliente,idslotDisponibili)
+CREATE INDEX idx_clnt_iscr ON iscrizioni(cliente_id);
+CREATE INDEX idx_corsi ON corsi (idistruttori);
+CREATE INDEX idx_data ON slotdisponibili(data);
+CREATE UNIQUE INDEX idx_att_corsi ON corsi(attivita_id);
+CREATE UNIQUE INDEX idx_att_sale ON salepesi(attivita_id);
+
+__________
+CHECK
+ALTER TABLE slots
+ADD CONSTRAINT slot_ora CHECK (orainizio>'08:00:00' AND orafine<'21:00:00');
+
+ALTER TABLE CLIENTI
+ADD CONSTRAINT eta_cliente CHECK (datanasc<'2006-01-01');
+
+ALTER TABLE ISTRUTTORI
+ADD CONSTRAINT eta_iatruttori CHECK (datanasc<'2003-01-01');
+
+__________
+#trigger su email UNIQUE
+
+CREATE FUNCTION email_doppie_clienti()
+RETURNS TRIGGER AS $$
+BEGIN
+        IF 
+            ( new.email in (select email from istruttori) )
+        THEN
+            DELETE FROM CLIENTI WHERE ID = NEW.ID;
+        END IF;
+			return NULL;
+    END;
+$$ LANGUAGE PLPGSQL
+
+CREATE FUNCTION email_doppie_istrut()
+RETURNS TRIGGER AS $$
+BEGIN
+        IF 
+            ( new.email in (select email from CLIENTI) )
+        THEN
+            DELETE FROM ISTRUTTORI WHERE ID = NEW.ID;
+        END IF;
+			return NULL;
+    END;
+
+$$ LANGUAGE PLPGSQL
+
+CREATE TRIGGER email_doppie_clienti 
+AFTER INSERT OR UPDATE
+ON CLIENTI
+FOR EACH ROW
+EXECUTE FUNCTION email_doppie_clienti()
+
+CREATE TRIGGER email_doppie_istrut 
+AFTER INSERT OR UPDATE
+ON ISTRUTTORI
+FOR EACH ROW
+EXECUTE FUNCTION email_doppie_istrut()
+
+__________
+#trigger su corso - cliente con prenotazioni
+
+CREATE FUNCTION cliente_prenot_corso()
+RETURNS TRIGGER AS $$
+BEGIN 
+    IF (
+        ((SELECT sd.idattivita FROM  slotdisponibili sd join prenotazioni p 
+		  on sd.id = p.idslotdisponibili where p.id = new.id)
+        NOT IN (select attivita_id from corsi c join iscrizioni i on c.id = i.corso_id where i.cliente_id = new.idcliente)) 
+		--è un corso del cliente
+		AND 
+		((SELECT sd.idattivita FROM  slotdisponibili sd join prenotazioni p 
+		  on sd.id = p.idslotdisponibili where p.id = new.id) NOT IN (SELECT attivita_id FROM salepesi)))
+		--attivita di salapesi
+    THEN 
+		DELETE FROM prenotazioni p WHERE p.id=NEW.id;
+	
+        
+	END IF;
+    	return null;
+END;
+$$ LANGUAGE PLPGSQL
+
+
+    CREATE TRIGGER cliente_prenot_corso
+    AFTER INSERT
+    ON prenotazioni
+    FOR EACH ROW
+    EXECUTE FUNCTION cliente_prenot_corso()
+__________
+#trigger non cancellare o  modificare uno slot
+
+CREATE FUNCTION slot_cancella()
+RETURNS TRIGGER AS $$
+BEGIN
+    return null;
+END;
+$$ LANGUAGE PLPGSQL
+
+    CREATE TRIGGER slot_cancella
+    BEFORE DELETE
+    ON slots
+    FOR EACH ROW
+    EXECUTE FUNCTION slot_cancella()
+__________
+#trigger non si può prenotare uno non attivo
+
+CREATE FUNCTION pren_active()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF 
+        ( select s.active from prenotazioni p join slotdisponibili sd on p.idslotdisponibili = sd.id 
+        join slots s on s.id = sd.idslot where new.id = p.id )
+    THEN
+        return NULL;
+    ELSE
+        DELETE FROM prenotazioni WHERE ID = NEW.ID;
+    END IF;
+        return NULL;
+END;
+$$ LANGUAGE PLPGSQL
+
+    CREATE TRIGGER pren_active 
+    AFTER INSERT OR UPDATE
+    ON prenotazioni
+    FOR EACH ROW
+    EXECUTE FUNCTION pren_active()
+__________
+#trigger prenotare solo su slotdisp con data con maggiore
+
+    CREATE TRIGGER pren_data 
+    AFTER INSERT OR UPDATE
+    ON prenotazioni
+    FOR EACH ROW
+    EXECUTE FUNCTION pren_data()
+
+CREATE FUNCTION pren_data()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF 
+        (CURRENT_DATE <= ( select ds.data from prenotazioni p join slotdisponibili sd on p.idslotdisponibili = sd.id where p.id = new.id))
+    THEN
+        return NULL;
+    ELSE 
+        DELETE FROM prenotazioni WHERE ID = NEW.ID;
+    END IF;
+        return NULL;
+END;
+$$ LANGUAGE PLPGSQL
+
+
+
+__________
+
+#limite corsi
+
+CREATE FUNCTION limite_corsi_fun() RETURNS TRIGGER AS $$
+BEGIN
+        IF 
+            ( (select count(*) from iscrizioni where corso_id = (SELECT corso_id from newRow)) > 
+			 (SELECT maxiscritti from corsi where id = (SELECT corso_id from newRow))
+			)
+        THEN
+            DELETE FROM iscrizioni WHERE cliente_id in (SELECT cliente_id FROM newRow) AND  corso_id in (SELECT corso_id FROM newRow);
+        END IF;
+			return null;
+    END;
+$$ LANGUAGE PLPGSQL
+
+CREATE TRIGGER limite_corsi
+AFTER INSERT ON iscrizioni
+REFERENCING NEW TABLE AS newRow FOR EACH STATEMENT 
+EXECUTE FUNCTION limite_corsi_fun()
+
+__________
+TRIGGER NUMERO MASSIMO ISCRITTI:
+
+CREATE FUNCTION limite_prenotazioni_fun()
+RETURNS TRIGGER AS $$
+BEGIN
+       IF( (select count(*) as numprenot from prenotazioni where idslotdisponibili=(select idslotdisponibili from newRow)) > 
+	   (select s.maxpersone from slots s join slotdisponibili sd on sd.idslot = s.id where sd.id = (select idslotdisponibili from newRow) )
+	  )
+        THEN
+            DELETE FROM prenotazioni WHERE id in (SELECT id FROM newRow);
+        END IF;
+			return null;		
+    END;
+
+$$ LANGUAGE PLPGSQL
+
+CREATE TRIGGER limite_prenotazioni 
+AFTER INSERT
+ON Prenotazioni
+REFERENCING NEW TABLE AS newRow 
+FOR EACH STATEMENT 
+EXECUTE FUNCTION limite_prenotazioni_fun()
